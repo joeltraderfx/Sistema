@@ -1,0 +1,17 @@
+{
+  "name": "indicador-license-server",
+  "version": "1.0.0",
+  "description": "Servidor de licencas - recebe webhook da Greenn, gera e valida chaves do indicador MT5",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.12.0",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^2.7.0"
+  }
+}
