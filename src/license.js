@@ -1,9 +1,15 @@
 const crypto = require("crypto");
-const { query } = require("./db");
+const { createClient } = require("@supabase/supabase-js");
 
-// Gera uma chave legivel tipo XXXX-XXXX-XXXX-XXXX (base32, sem caracteres ambiguos)
+// Conecta ao Supabase via HTTP (funciona 100% no Render, sem IPv6)
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
+
+// Gera uma chave legivel tipo XXXX-XXXX-XXXX-XXXX
 function generateLicenseKey() {
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sem 0,O,1,I
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const bytes = crypto.randomBytes(16);
   let raw = "";
   for (let i = 0; i < bytes.length; i++) {
@@ -20,71 +26,106 @@ async function createOrRenewLicense({
   greennSaleId,
   greennContractId,
 }) {
-  // Se ja existe uma licenca para este contrato, apenas renova (estende a validade)
   if (greennContractId) {
-    const existing = await query(
-      "select * from licenses where greenn_contract_id = $1",
-      [greennContractId]
-    );
-    if (existing.rows.length > 0) {
-      const lic = existing.rows[0];
+    const { data: existing, error } = await supabase
+      .from("licenses")
+      .select("*")
+      .eq("greenn_contract_id", greennContractId)
+      .limit(1);
+
+    if (error) throw error;
+
+    if (existing && existing.length > 0) {
+      const lic = existing[0];
       const base = new Date() > new Date(lic.expires_at) ? new Date() : new Date(lic.expires_at);
       const newExpires = new Date(base.getTime() + planDays * 86400000);
-      const updated = await query(
-        `update licenses set status='active', expires_at=$1, updated_at=now() where id=$2 returning *`,
-        [newExpires.toISOString(), lic.id]
-      );
-      return { license: updated.rows[0], isNew: false };
+
+      const { data: updated, error: updateError } = await supabase
+        .from("licenses")
+        .update({ status: "active", expires_at: newExpires.toISOString(), updated_at: new Date().toISOString() })
+        .eq("id", lic.id)
+        .select();
+
+      if (updateError) throw updateError;
+      return { license: updated[0], isNew: false };
     }
   }
 
   const licenseKey = generateLicenseKey();
   const expiresAt = new Date(Date.now() + planDays * 86400000);
 
-  const inserted = await query(
-    `insert into licenses (license_key, product_id, plan_days, client_email, client_name,
-       status, expires_at, greenn_sale_id, greenn_contract_id)
-     values ($1,$2,$3,$4,$5,'active',$6,$7,$8) returning *`,
-    [licenseKey, productId, planDays, clientEmail, clientName || null, expiresAt.toISOString(), greennSaleId || null, greennContractId || null]
-  );
+  const { data: inserted, error } = await supabase
+    .from("licenses")
+    .insert({
+      license_key: licenseKey,
+      product_id: productId,
+      plan_days: planDays,
+      client_email: clientEmail,
+      client_name: clientName || null,
+      status: "active",
+      expires_at: expiresAt.toISOString(),
+      greenn_sale_id: greennSaleId || null,
+      greenn_contract_id: greennContractId || null,
+    })
+    .select();
 
-  return { license: inserted.rows[0], isNew: true };
+  if (error) throw error;
+  return { license: inserted[0], isNew: true };
 }
 
 async function revokeByContract(greennContractId) {
   if (!greennContractId) return;
-  await query(
-    "update licenses set status='canceled', updated_at=now() where greenn_contract_id=$1",
-    [greennContractId]
-  );
+  await supabase
+    .from("licenses")
+    .update({ status: "canceled", updated_at: new Date().toISOString() })
+    .eq("greenn_contract_id", greennContractId);
 }
 
 // Valida (e, na 1a vez, vincula) uma chave a uma conta MT5
 async function validateAndBind({ licenseKey, account, broker }) {
   try {
-    const res = await query("select * from licenses where license_key=$1", [licenseKey]);
-    
-    if (!res || res.rows.length === 0) {
+    const { data: licencas, error } = await supabase
+      .from("licenses")
+      .select("*")
+      .eq("license_key", licenseKey)
+      .limit(1);
+
+    if (error) {
+      console.error("Erro ao buscar licença:", error);
+      return { ok: false, reason: "DATABASE_ERROR" };
+    }
+
+    if (!licencas || licencas.length === 0) {
       return { ok: false, reason: "KEY_NOT_FOUND" };
     }
-    
-    const lic = res.rows[0];
+
+    const lic = licencas[0];
 
     if (lic.status !== "active") {
       return { ok: false, reason: "KEY_CANCELED" };
     }
 
-    // Proteção: verifica se expires_at existe antes de comparar
     if (!lic.expires_at || new Date(lic.expires_at) < new Date()) {
       return { ok: false, reason: "KEY_EXPIRED" };
     }
 
     if (!lic.bound_account) {
-      // Primeira ativacao: vincula a chave a esta conta
-      await query(
-        "update licenses set bound_account=$1, bound_broker=$2, bound_at=now(), updated_at=now() where id=$3",
-        [String(account), broker || 'Desconhecido', lic.id]
-      );
+      // Primeira ativação: vincula a chave a esta conta
+      const { error: updateError } = await supabase
+        .from("licenses")
+        .update({
+          bound_account: String(account),
+          bound_broker: broker || "Desconhecido",
+          bound_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", lic.id);
+
+      if (updateError) {
+        console.error("Erro ao vincular conta:", updateError);
+        return { ok: false, reason: "BIND_ERROR" };
+      }
+
       return { ok: true, reason: "SUCCESS", expiresAt: lic.expires_at };
     }
 
@@ -95,8 +136,6 @@ async function validateAndBind({ licenseKey, account, broker }) {
     return { ok: true, reason: "SUCCESS", expiresAt: lic.expires_at };
 
   } catch (error) {
-    // Isso é CRUCIAL: em vez de derrubar o servidor com erro 500, 
-    // ele captura o erro, imprime no log do Render e avisa o MT5 o motivo real.
     console.error("ERRO AO VALIDAR LICENÇA:", error);
     return { ok: false, reason: "SERVER_ERROR: " + error.message };
   }
