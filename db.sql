@@ -1,23 +1,45 @@
--- Rode isso uma vez no Supabase: SQL Editor -> New query -> cole e execute (Run)
+const { Pool } = require("pg");
+const { URL } = require("url");
 
-create table if not exists licenses (
-  id              bigserial primary key,
-  license_key     text unique not null,
-  product_id      text,
-  plan_days       integer not null,
-  client_email    text not null,
-  client_name     text,
-  status          text not null default 'active',   -- active | canceled | expired
-  expires_at      timestamptz not null,
-  bound_account   text,                              -- numero da conta MT5 vinculada (preenchido na 1a ativacao)
-  bound_broker    text,                              -- corretora vinculada
-  bound_at        timestamptz,
-  greenn_sale_id  text,
-  greenn_contract_id text,
-  created_at      timestamptz not null default now(),
-  updated_at      timestamptz not null default now()
-);
+// Extrai as partes da DATABASE_URL para forçar IPv4
+let poolConfig = {
+  ssl: { rejectUnauthorized: false },
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+};
 
-create index if not exists idx_licenses_key on licenses (license_key);
-create index if not exists idx_licenses_contract on licenses (greenn_contract_id);
-create index if not exists idx_licenses_email on licenses (client_email);
+if (process.env.DATABASE_URL) {
+  try {
+    const dbUrl = new URL(process.env.DATABASE_URL);
+    poolConfig.host = dbUrl.hostname;
+    poolConfig.port = parseInt(dbUrl.port || "5432");
+    poolConfig.database = dbUrl.pathname.substring(1);
+    poolConfig.user = dbUrl.username;
+    poolConfig.password = dbUrl.password;
+  } catch (e) {
+    console.error("Erro ao parsear DATABASE_URL:", e.message);
+    poolConfig.connectionString = process.env.DATABASE_URL;
+  }
+}
+
+const pool = new Pool(poolConfig);
+
+pool.on("error", (err) => {
+  console.error("Erro inesperado no pool PostgreSQL:", err);
+});
+
+async function query(text, params) {
+  const start = Date.now();
+  try {
+    const res = await pool.query(text, params);
+    const duration = Date.now() - start;
+    console.log("Query executada em", duration, "ms");
+    return res;
+  } catch (error) {
+    console.error("Erro na query:", error.message);
+    throw error;
+  }
+}
+
+module.exports = { query, pool };
