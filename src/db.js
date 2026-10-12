@@ -1,12 +1,1 @@
-const { Pool } = require("pg");
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
-async function query(text, params) {
-  return pool.query(text, params);
-}
-
-module.exports = { query, pool };
+const { Pool } = require("pg"); const dns = require("dns"); function forceIPv4Lookup(hostname, options, callback) { dns.lookup(hostname, { family: 4 }, callback); } const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, lookup: forceIPv4Lookup, }); async function query(text, params) { return pool.query(text, params); } module.exports = { query, pool };
